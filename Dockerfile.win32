@@ -1,0 +1,167 @@
+# syntax=docker/dockerfile:1
+
+# large deps files as separate layer
+FROM ubuntu:18.04 AS largedeps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  git \
+  curl \
+  --reinstall ca-certificates \
+  && update-ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /deps
+# Download sources into the corresponding folders
+# For refernence commit hash when this was last run by me:
+#   binutils-gdb@63b6693fc457425a4f8e697e5e76f6f333898fcb
+#   mingw-w64@2e87f03fc17adf6a1a4f94d6793a4f5ae74fdc89
+#   gcc@3b3f336af29c6f25b7ded05ae037b5ab57b2ae67
+# Could use (if new enough Git): git clone --depth 1 --revision SHA1 ...
+RUN git clone --depth 1 git://sourceware.org/git/binutils-gdb.git binutils && \
+  git clone --depth 1 https://git.code.sf.net/p/mingw-w64/mingw-w64 mingw-w64 && \
+  git clone --depth 1 git://gcc.gnu.org/git/gcc.git gcc
+# Next, download gcc prerequisites using its own script:
+WORKDIR /deps/gcc
+RUN ./contrib/download_prerequisites
+
+FROM ubuntu:18.04 AS crosscompiler
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libmpfr-dev \
+  libmpc-dev \
+  flex \
+  build-essential \
+  bison \
+  curl \
+  make \
+  texinfo \
+  --reinstall ca-certificates \
+  && update-ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV TRIPLET=i486-w64-mingw32
+ENV NUM_CORES=2
+ENV START_DIR=/opt/i486-mingw
+ENV PATH="${START_DIR}/mingw-builds/install/cross/bin:${PATH}"
+
+RUN mkdir -p \
+  $START_DIR/mingw-builds \
+  $START_DIR/mingw-builds/src \
+  $START_DIR/mingw-builds/build \
+  $START_DIR/mingw-builds/install \
+  $START_DIR/mingw-builds/src/binutils \
+  $START_DIR/mingw-builds/src/mingw-w64 \
+  $START_DIR/mingw-builds/src/gcc \
+  $START_DIR/mingw-builds/build/cross \
+  $START_DIR/mingw-builds/build/native \
+  $START_DIR/mingw-builds/build/cross/binutils \
+  $START_DIR/mingw-builds/build/cross/mingw-w64-headers \
+  $START_DIR/mingw-builds/build/cross/mingw-w64 \
+  $START_DIR/mingw-builds/build/cross/gcc \
+  $START_DIR/mingw-builds/build/native/binutils \
+  $START_DIR/mingw-builds/build/native/mingw-w64 \
+  $START_DIR/mingw-builds/build/native/gcc \
+  $START_DIR/mingw-builds/install/cross
+
+WORKDIR $START_DIR/mingw-builds/src
+
+# Download sources into the corresponding folder under mingw-builds/src/
+COPY --from=largedeps deps .
+# RUN git clone --depth 1 git://sourceware.org/git/binutils-gdb.git binutils && \
+#   git clone --depth 1 https://git.code.sf.net/p/mingw-w64/mingw-w64 mingw-w64 && \
+#   git clone --depth 1 git://gcc.gnu.org/git/gcc.git gcc
+#
+# # Next, download gcc prerequisites using its own script:
+# WORKDIR $START_DIR/mingw-builds/src/gcc
+# RUN ./contrib/download_prerequisites
+
+# build binutils
+WORKDIR  $START_DIR/mingw-builds/build/cross/binutils
+RUN ../../../src/binutils/configure --prefix=$START_DIR/mingw-builds/install/cross --target=$TRIPLET --disable-multilib
+RUN make -j$NUM_CORES
+RUN make install
+
+# Install the mingw-w64 headers into the target (Windows) sysroot of the cross-compiler.
+# WORKDIR $START_DIR/mingw-builds/src/mingw-w64/mingw-w64-headers
+# if [ -e Makefile ]; then
+#   make distclean
+# fi
+WORKDIR $START_DIR/mingw-builds/build/cross/mingw-w64-headers
+RUN ../../../src/mingw-w64/mingw-w64-headers/configure --host=$TRIPLET --prefix=$START_DIR/mingw-builds/install/cross/$TRIPLET --with-default-msvcrt=msvcrt
+RUN make install && \
+  ln -s $START_DIR/mingw-builds/install/cross/$TRIPLET $START_DIR/mingw-builds/install/cross/mingw && \
+  mkdir -p $START_DIR/mingw-builds/install/cross/$TRIPLET/lib
+  #ln -s $START_DIR/mingw-builds/install/cross/$TRIPLET/lib /usr/local/$TRIPLET/lib64
+
+# With the target headers installed, build the core gcc cross-compiler (not a full working cross-compiler yet).
+WORKDIR $START_DIR/mingw-builds/build/cross/gcc
+RUN ../../../src/gcc/configure --prefix=$START_DIR/mingw-builds/install/cross --target=$TRIPLET --disable-multilib --enable-languages=c,c++
+RUN make -j$NUM_CORES all-gcc
+RUN make install-gcc
+
+# Build mingw-w64 CRT and install into cross-compiler sysroot. Note we are using --host here!
+WORKDIR $START_DIR/mingw-builds/build/cross/mingw-w64
+RUN ../../../src/mingw-w64/configure --host=$TRIPLET --prefix=$START_DIR/mingw-builds/install/cross/$TRIPLET --with-default-msvcrt=msvcrt
+RUN make -j$NUM_CORES
+RUN make install
+
+# Finish building the gcc cross-compiler (combine the already-built core with the just-built mingw-w64 libs).
+WORKDIR $START_DIR/mingw-builds/build/cross/gcc
+RUN make -j$NUM_CORES
+RUN make install
+
+FROM ubuntu:18.04
+
+ENV TRIPLET=i486-w64-mingw32
+ENV START_DIR=/opt/i486-mingw
+ENV PATH="${START_DIR}/mingw-builds/install/cross/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  # libmpfr-dev \
+  # libmpc-dev \
+  # flex \
+  # build-essential \
+  # bison \
+  curl \
+  # gcc \
+  # g++ \
+  make \
+  # texinfo \
+  # zlib1g-dev \
+  # g++ \
+  # unzip \
+  # htop \
+  npm \
+  # python-yaml \
+  wget \
+  zip \
+  dos2unix \
+  python3 \
+  python3-pip \
+  --reinstall ca-certificates \
+  && update-ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install newish CMake
+RUN wget -q --no-check-certificate https://cmake.org/files/v3.31/cmake-3.31.0-linux-x86_64.tar.gz && \
+  tar xzf ./cmake-3.31.0-linux-x86_64.tar.gz && \
+  cp -r cmake-3.31.0-linux-x86_64/bin cmake-3.31.0-linux-x86_64/share /usr/local/ && \
+  rm -r cmake*
+
+# Pre-reqs for building jSH
+RUN npm install -g jsdoc@3.5 && \
+  npm install -g better-docs@1.1 && \
+  rm -rf ~/.npm && \
+  pip3 install -U 'jsonschema<4.0' && \
+  pip3 install -U Jinja2
+
+COPY --from=crosscompiler $START_DIR/mingw-builds/install $START_DIR/mingw-builds/install
+
+# Needed for Allegro (DOjS) make command
+RUN ln -s $START_DIR/mingw-builds/install/cross/i486-w64-mingw32 /i486-w64-mingw32
+
+# Test the newly-built cross-compiler. It should be already in the path from before.
+WORKDIR $START_DIR
+RUN $TRIPLET-gcc --version
+RUN bash -c "echo -ne '#include <windows.h>\\n#include <stdio.h>\\nint main() {printf(\"Hello\\\\n\"); return 0;}\\n' | $TRIPLET-gcc -xc - -o hello.exe"
+RUN i486-w64-mingw32-objdump -p hello.exe | grep -Ei '\.?(exe|dll|dll name):'
+RUN rm hello.exe
+
