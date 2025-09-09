@@ -7,7 +7,7 @@ Note: currently contains only scripts for building on a Windows host, but they'r
 
 Requires Docker (use Docker Desktop on Windows), and will download the appropriate Docker images from DockerHub.  You can also build the Docker images yourself.
 
-I have tested these Docker images successfully building the upstream jSH for DOS, DOjS for DOS and Win32, and the Jimbly/jSH for for DOS and Win32.
+I have tested these Docker images successfully building the upstream [jSH](https://github.com/SuperIlu/jSH) for DOS, [DOjS](https://github.com/SuperIlu/DOjS) for DOS and Win32, and the [Jimbly/jSH fork](https://github.com/Jimbly/jSH) for DOS and Win32.
 
 Usage
 =====
